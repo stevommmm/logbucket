@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -10,10 +11,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"errors"
 	"log"
 	"math/big"
 	"net"
 	"os"
+	"os/signal"
 	"regexp"
 	"sort"
 	"time"
@@ -91,8 +94,9 @@ func selfSignedCert() (tls.Certificate, error) {
 	return outCert, nil
 }
 
-func zOpenNow() (*os.File, *zstd.Encoder) {
-	f, err := os.Create(fmt.Sprintf("log.%d", time.Now().Unix()))
+func zOpenNow(btime time.Duration) (*os.File, *zstd.Encoder) {
+	now := time.Now()
+	f, err := os.OpenFile(fmt.Sprintf("log.%d", now.Truncate(btime).Unix()), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -104,21 +108,20 @@ func zOpenNow() (*os.File, *zstd.Encoder) {
 	return f, zlog
 }
 
-func logConsumer(c chan map[string]string) {
-	f, zlog := zOpenNow()
+func logConsumer(c chan []byte, btime time.Duration) {
+	f, zlog := zOpenNow(btime)
 	total := 0
 
 	for {
-		raw := <-c
-		line, err := json.Marshal(raw)
-		if err != nil {
-			log.Fatal()
+		line, ok := <-c
+		if !ok {
+			zlog.Flush()
+			break
 		}
 		if (len(line) + total) > CHUNK_SIZE {
 			zlog.Close()
 			f.Close()
-			log.Printf("Rotating log at %d bytes\n", total)
-			f, zlog = zOpenNow()
+			f, zlog = zOpenNow(btime)
 			total = 0
 		}
 
@@ -149,21 +152,21 @@ func findNamedMatches(regex *regexp.Regexp, str string) map[string]string {
 	return results
 }
 
-func handleClient(c *bConn, ch chan map[string]string) {
+func handleClient(ctx context.Context, c *bConn, ch chan []byte) {
 	defer c.Close()
 	remoteAddr := c.RemoteAddr().String()
-	log.Printf("Client connected from %q\n", remoteAddr)
+	fmt.Printf("[info][%s] Client connected\n", remoteAddr)
 
 	var scanner *bufio.Scanner
 
 	// Handle TLS clients on same port
 	if fb, err := c.FirstByte(); err != nil {
-		log.Printf("TLS Peek failed for %q with %s\n", remoteAddr, err)
+		fmt.Fprintf(os.Stderr, "[error][%s] TLS Peek failed: %s\n", remoteAddr, err)
 		return
 	} else {
 		// https://tls12.xargs.org/#client-hello
 		if fb[0] == 22 { // 22 as \x16
-			log.Printf("Client upgraded to TLS for %q\n", remoteAddr)
+			fmt.Printf("[info][%s] Client upgraded to TLS\n", remoteAddr)
 			var s *tls.Conn
 			s = tls.Server(c, TLS_CONF)
 			defer s.Close()
@@ -176,28 +179,42 @@ func handleClient(c *bConn, ch chan map[string]string) {
 	// Input lines are newline delim
 	scanner.Split(bufio.ScanLines)
 
+	// Interrupt worker on os signals
+	go func() {
+		<-ctx.Done()
+		c.Close()
+	}()
+
 LINEREAD:
 	for scanner.Scan() {
 		line := scanner.Text()
-		for _, reg := range REGEXES {
-			if matches := findNamedMatches(reg, line); len(matches) > 0 {
-				ch <- matches
+		for i := len(REGEXES) - 1; i > 0; i-- {
+			if matches := findNamedMatches(REGEXES[i], line); len(matches) > 0 {
+				matches["_ingest"] = fmt.Sprintf("%d", time.Now().Unix())
+				matches["_remote"] = remoteAddr
+				data, err := json.Marshal(matches)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "[error][%s] Can't mashal client content to JSON: %s\n", remoteAddr, err)
+					return
+				}
+				ch <- data
 				continue LINEREAD
 			}
 		}
 		// Record lines without a match
-		log.Printf("[!] %q\n", line)
+		fmt.Printf("[warn][%s] Unhandled log: %q\n", remoteAddr, line)
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, "Reading client socket", err)
+		fmt.Fprintln(os.Stderr, "[error][%s] Line scanner fail: %s\n", remoteAddr, err)
 	}
 
-	log.Println("Client at", remoteAddr, "disconnected")
+	fmt.Printf("[info][%s] Client disconnected\n", remoteAddr)
 }
 
 func main() {
 	cliConfig := flag.String("config", "./config.yml", "Configuration yaml file path.")
-	cliListen := flag.String("listen", ":9999", "Address to listen on.")
+	cliListen := flag.String("listen", ":6514", "Address to listen on.")
+	cliBucket := flag.Duration("timebucket", 1*time.Hour, "Time slice to bucket logs into.")
 	flag.Parse()
 
 	f, err := os.Open(*cliConfig)
@@ -215,7 +232,7 @@ func main() {
 	for _, reg := range conf.Regexes {
 		comp, err := regexp.Compile(reg)
 		if err != nil {
-			log.Println("[x]", err)
+			fmt.Fprintf(os.Stderr, "[error] Regex compilation: %s\n", err)
 		} else {
 			REGEXES = append(REGEXES, comp)
 		}
@@ -247,25 +264,39 @@ func main() {
 		return REGEXES[i].NumSubexp() < REGEXES[j].NumSubexp()
 	})
 
-	log.Println("Attempting regexes in order:")
-	for i, r := range REGEXES {
-		log.Printf("  #%d: %q", i, r.String())
+	fmt.Println("[info] Attempting regexes in order:")
+	for i := len(REGEXES) - 1; i >= 0; i-- {
+		fmt.Printf("  %d: (%d) %q\n", i+1, REGEXES[i].NumSubexp(), REGEXES[i].String())
 	}
 
-	c := make(chan map[string]string, 10)
-	ln, err := net.Listen("tcp", *cliListen)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	defer stop()
+
+	c := make(chan []byte, 10)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", *cliListen)
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer ln.Close()
 
-	go logConsumer(c)
+	go func() {
+		<-ctx.Done()
+		log.Println("Got interrupt.")
+		ln.Close()
+		close(c)
+	}()
+
+	go logConsumer(c, *cliBucket)
 
 	for {
 		cl, err := ln.Accept()
 		if err != nil {
-			log.Println(err)
+			if errors.Is(err, net.ErrClosed) {
+				break
+			}
+			fmt.Fprintf(os.Stderr, "Accept error: %s\n", err)
 			continue
 		}
-		go handleClient(newbConn(cl), c)
+		go handleClient(ctx, newbConn(cl), c)
 	}
 }
