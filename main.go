@@ -263,22 +263,25 @@ func main() {
 	sort.SliceStable(REGEXES, func(i, j int) bool {
 		return REGEXES[i].NumSubexp() < REGEXES[j].NumSubexp()
 	})
-
 	fmt.Println("[info] Attempting regexes in order:")
 	for i := len(REGEXES) - 1; i >= 0; i-- {
 		fmt.Printf("  %d: (%d) %q\n", i+1, REGEXES[i].NumSubexp(), REGEXES[i].String())
 	}
 
+	// OS signal hook
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer stop()
 
+	// File writer consumer channel
 	c := make(chan []byte, 10)
+
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", *cliListen)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer ln.Close()
 
+	// Shut down listener on OS signal, then close consumer channel
 	go func() {
 		<-ctx.Done()
 		log.Println("Got interrupt.")
@@ -286,6 +289,7 @@ func main() {
 		close(c)
 	}()
 
+	// Start a single consumer to do the file IO
 	go logConsumer(c, *cliBucket)
 
 	for {
