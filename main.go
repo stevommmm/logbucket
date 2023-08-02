@@ -9,9 +9,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"errors"
 	"log"
 	"math/big"
 	"net"
@@ -25,10 +25,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var CHUNK_SIZE = 1000000 * 512
-var NEWLINE byte = '\n'
-var REGEXES []*regexp.Regexp
-var TLS_CONF *tls.Config
+var (
+	CHUNK_SIZE      = 1000000 * 512
+	NEWLINE    byte = '\n'
+	REGEXES    []*regexp.Regexp
+	TLS_CONF   *tls.Config
+)
 
 type RawConfig struct {
 	Regexes []string `yaml:"regexes"`
@@ -159,7 +161,7 @@ func handleClient(ctx context.Context, c *bConn, ch chan []byte) {
 
 	var scanner *bufio.Scanner
 
-	// Handle TLS clients on same port
+	// Handle plain tcp and tls
 	if fb, err := c.FirstByte(); err != nil {
 		fmt.Fprintf(os.Stderr, "[error][%s] TLS Peek failed: %s\n", remoteAddr, err)
 		return
@@ -169,7 +171,7 @@ func handleClient(ctx context.Context, c *bConn, ch chan []byte) {
 			fmt.Printf("[info][%s] Client upgraded to TLS\n", remoteAddr)
 			var s *tls.Conn
 			s = tls.Server(c, TLS_CONF)
-			defer s.Close()
+			defer s.Close() // stacking closes tls.Conn>net.Conn
 			scanner = bufio.NewScanner(s)
 		} else {
 			scanner = bufio.NewScanner(c)
