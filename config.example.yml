@@ -1,5 +1,6 @@
 timebucket: 1h
 listen: ":6514"
+chanbufsize: 10
 regexes:
   # Journalctl -l output
   - !!str ^(?P<date>[a-zA-Z]+? \d+? \d+?:\d+?:\d+?) (?P<host>[a-zA-Z0-9\.\-]+?) (?P<service>\S+?):(?P<message>.+)$

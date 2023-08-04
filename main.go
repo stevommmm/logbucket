@@ -310,6 +310,7 @@ func main() {
 		<-Runtime.Finalizer.Done()
 		log.Println("Got interrupt.")
 		ln.Close()
+		time.Sleep(time.Second) // give everyone a moment to close before channels exit
 		for _, c := range Runtime.Forwards {
 			close(c)
 		}
