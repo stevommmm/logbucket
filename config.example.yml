@@ -1,3 +1,5 @@
+timebucket: 1h
+listen: ":6514"
 regexes:
   # Journalctl -l output
   - !!str ^(?P<date>[a-zA-Z]+? \d+? \d+?:\d+?:\d+?) (?P<host>[a-zA-Z0-9\.\-]+?) (?P<service>\S+?):(?P<message>.+)$
@@ -5,3 +7,5 @@ regexes:
   - !!str ^<(?P<pri>\d+?)>(?P<date>[\d\-]+?)T(?P<time>[\d\:\+\.]+?) (?P<hostname>[\w\-\.]+?) (?P<service>[\w\-]+?)(?P<pid>\[\d+\])?:\s*(?P<message>.+)$
   # RSYSLOG_SyslogProtocol23Format / RFC5424
   - !!str ^<(?P<pri>\d+?)>1 (?P<date>[\d\-]+?)T(?P<time>[\d\:\+\.]+?) (?P<hostname>[\w\-\.]+?) (?P<service>[\w\-\(\)]+?) (?P<pid>\d+|\-) (?P<msgid>.+?|\-) (?P<struc>\[.+?\]|\-) (?P<message>.+)$
+forwards:
+  - /tmp/debug.sock
