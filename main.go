@@ -220,6 +220,25 @@ LINEREAD:
 				return
 			}
 			line := scanner.Text()
+			// Check for json blobs
+			if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
+				raw := make(map[string]interface{})
+				// wasteful parse then fmt, should be a better way
+				if err := json.Unmarshal([]byte(line), &raw); err == nil {
+					raw["_ingest"] = fmt.Sprintf("%d", time.Now().Unix())
+					raw["_remote"] = remoteAddr
+					if data, err := json.Marshal(raw); err == nil {
+						for _, ch := range Runtime.Forwards {
+							select {
+							case ch <- data:
+							default:
+							}
+						}
+						continue LINEREAD
+					}
+				}
+			}
+			// Handle more expensive regex testing
 			for i := len(Runtime.Regexes) - 1; i > 0; i-- {
 				if matches := findNamedMatches(Runtime.Regexes[i], line); len(matches) > 0 {
 					matches["_ingest"] = fmt.Sprintf("%d", time.Now().Unix())
