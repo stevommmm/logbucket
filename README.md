@@ -17,6 +17,7 @@ TCP(+TLS) input, json and regex parser, zstandard file output, unix socket outpu
 * Automatic self-signed SSL generation for testing
 * Easy active log debugging with `nc -l -k -U /tmp/debug.sock` (if configed as an output)
 
+See [config.example.yml](config.example.yml) for configuration options.
 
 ### Nftables forwarding
 

@@ -1,5 +1,8 @@
 timebucket: 1h
 listen: ":6514"
+tls:
+  cert: /etc/letsencrypt/live/example.com/cert.pem
+  key: /etc/letsencrypt/live/example.com/privkey.pem
 chanbufsize: 10
 regexes:
   # Journalctl -l output
