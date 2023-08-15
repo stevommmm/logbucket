@@ -1,9 +1,10 @@
-timebucket: 1h
 listen: ":6514"
 tls:
   cert: /etc/letsencrypt/live/example.com/cert.pem
   key: /etc/letsencrypt/live/example.com/privkey.pem
 chanbufsize: 10
+timebucket: 1h
+location: './'
 regexes:
   # Journalctl -l output
   - !!str ^(?P<date>[a-zA-Z]+? \d+? \d+?:\d+?:\d+?) (?P<host>[a-zA-Z0-9\.\-]+?) (?P<service>\S+?):(?P<message>.+)$

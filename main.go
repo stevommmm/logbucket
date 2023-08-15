@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -30,25 +31,27 @@ var (
 )
 
 type RawConfig struct {
-	ChanBufSize int      `yaml:"chanbufsize"`
-	Listen      string   `yaml:"listen"`
-	TimeBucket  string   `yaml:"timebucket"`
-	Regexes     []string `yaml:"regexes"`
-	Forwards    []string `yaml:"forwards"`
-	TLS         struct {
+	ChanBufSize    int      `yaml:"chanbufsize"`
+	Listen         string   `yaml:"listen"`
+	TimeBucket     string   `yaml:"timebucket"`
+	BucketLocation string   `yaml:"location"`
+	Regexes        []string `yaml:"regexes"`
+	Forwards       []string `yaml:"forwards"`
+	TLS            struct {
 		Cert string `yaml:"cert"`
 		Key  string `yaml:"key"`
 	} `yaml:"tls"`
 }
 
 type RuntimeConfig struct {
-	ChanBufSize int
-	TimeBucket  time.Duration
-	Regexes     []*regexp.Regexp
-	Forwards    []chan []byte
-	Tls         *tls.Config
-	Waits       sync.WaitGroup
-	Finalizer   context.Context
+	ChanBufSize    int
+	TimeBucket     time.Duration
+	BucketLocation string
+	Regexes        []*regexp.Regexp
+	Forwards       []chan []byte
+	Tls            *tls.Config
+	Waits          sync.WaitGroup
+	Finalizer      context.Context
 }
 
 func (rc *RuntimeConfig) Stats() {
@@ -80,7 +83,10 @@ func (rc *RuntimeConfig) WrapConnTLS(c net.Conn) *tls.Conn {
 
 func zOpenNow(btime time.Duration) (*os.File, *zstd.Encoder, int64) {
 	now := time.Now()
-	f, err := os.OpenFile(fmt.Sprintf("log.%d", now.Truncate(btime).Unix()), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
+	f, err := os.OpenFile(filepath.Join(
+		Runtime.BucketLocation,
+		fmt.Sprintf("log.%d", now.Truncate(btime).Unix()),
+	), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -221,7 +227,7 @@ LINEREAD:
 			}
 			line := scanner.Text()
 			// Check for json blobs
-			if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
+			if strings.HasPrefix(line, "{") {
 				raw := make(map[string]interface{})
 				// wasteful parse then fmt, should be a better way
 				if err := json.Unmarshal([]byte(line), &raw); err == nil {
@@ -290,6 +296,7 @@ func main() {
 		Runtime.TimeBucket = tb
 	}
 	Runtime.ChanBufSize = conf.ChanBufSize
+	Runtime.BucketLocation = conf.BucketLocation
 
 	// Compile regexes from config
 	for _, reg := range conf.Regexes {
@@ -333,6 +340,7 @@ func main() {
 		for _, c := range Runtime.Forwards {
 			close(c)
 		}
+		log.Println("Forward channels closed.")
 	}()
 
 	// Start a single consumer to do the file IO
