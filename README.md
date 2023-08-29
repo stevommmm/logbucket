@@ -24,4 +24,6 @@ See [config.example.yml](config.example.yml) for configuration options.
 ```bash
 # Forward non-tls syslog to syslog-tls listener
 nft add rule nat prerouting tcp dport 514 redirect to 6514
+# Forward udp to nonpriv port on same as TCP
+nft add rule nat prerouting udp dport 514 redirect to 6514
 ```

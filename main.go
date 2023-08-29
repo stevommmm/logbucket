@@ -189,6 +189,29 @@ func findNamedMatches(regex *regexp.Regexp, str string) map[string]string {
 	return results
 }
 
+func handleUDP(c net.PacketConn) {
+	buf := make([]byte, 1024)
+	for {
+		select {
+		case <-Runtime.Finalizer.Done():
+			return
+		default:
+			n, addr, err := c.ReadFrom(buf)
+			if n > 0 {
+				line := buf[:n]
+				parseline(string(line), addr.String())
+			}
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				fmt.Fprintf(os.Stderr, "[error][%s] UDP handler: %s\n", addr, err)
+			}
+		}
+	}
+	log.Println("handleUDP exit")
+}
+
 func handleClient(c *bConn) {
 	defer Runtime.Waits.Done()
 	defer c.Close()
@@ -212,60 +235,20 @@ func handleClient(c *bConn) {
 			scanner = bufio.NewScanner(c)
 		}
 	}
-
 	// Input lines are newline delim
 	scanner.Split(bufio.ScanLines)
-
-LINEREAD:
+OUTER:
 	for {
 		select {
 		case <-Runtime.Finalizer.Done():
-			return
+			break OUTER
 		default:
 			if !scanner.Scan() {
-				return
+				break OUTER
 			}
 			line := scanner.Text()
-			// Check for json blobs
-			if strings.HasPrefix(line, "{") {
-				raw := make(map[string]interface{})
-				// wasteful parse then fmt, should be a better way
-				if err := json.Unmarshal([]byte(line), &raw); err == nil {
-					raw["_ingest"] = fmt.Sprintf("%d", time.Now().Unix())
-					raw["_remote"] = remoteAddr
-					if data, err := json.Marshal(raw); err == nil {
-						for _, ch := range Runtime.Forwards {
-							select {
-							case ch <- data:
-							default:
-							}
-						}
-						continue LINEREAD
-					}
-				}
-			}
-			// Handle more expensive regex testing
-			for i := len(Runtime.Regexes) - 1; i > 0; i-- {
-				if matches := findNamedMatches(Runtime.Regexes[i], line); len(matches) > 0 {
-					matches["_ingest"] = fmt.Sprintf("%d", time.Now().Unix())
-					matches["_remote"] = remoteAddr
-					data, err := json.Marshal(matches)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "[error][%s] Can't mashal client content to JSON: %s\n", remoteAddr, err)
-						return
-					}
-					for _, ch := range Runtime.Forwards {
-						select {
-						case ch <- data:
-						default:
-						}
-					}
-					// We had a match, dont test the rest of the regex
-					continue LINEREAD
-				}
-			}
-			// Record lines without a match
-			fmt.Printf("[warn][%s] Unhandled log: %q\n", remoteAddr, line)
+			parseline(line, remoteAddr)
+
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -273,6 +256,48 @@ LINEREAD:
 	}
 
 	fmt.Printf("[info][%s] Client disconnected\n", remoteAddr)
+}
+
+func parseline(line, remoteAddr string) {
+	if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
+		raw := make(map[string]interface{})
+		// wasteful parse then fmt, should be a better way
+		if err := json.Unmarshal([]byte(line), &raw); err == nil {
+			raw["_ingest"] = fmt.Sprintf("%d", time.Now().Unix())
+			raw["_remote"] = remoteAddr
+			if data, err := json.Marshal(raw); err == nil {
+				for _, ch := range Runtime.Forwards {
+					select {
+					case ch <- data:
+					default:
+					}
+				}
+				return
+			}
+		}
+	}
+	// Handle more expensive regex testing
+	for i := len(Runtime.Regexes) - 1; i > 0; i-- {
+		if matches := findNamedMatches(Runtime.Regexes[i], line); len(matches) > 0 {
+			matches["_ingest"] = fmt.Sprintf("%d", time.Now().Unix())
+			matches["_remote"] = remoteAddr
+			data, err := json.Marshal(matches)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[error][%s] Can't mashal client content to JSON: %s\n", remoteAddr, err)
+				return
+			}
+			for _, ch := range Runtime.Forwards {
+				select {
+				case ch <- data:
+				default:
+				}
+			}
+			// We had a match, dont test the rest of the regex
+			return
+		}
+	}
+	// Record lines without a match
+	fmt.Printf("[warn][%s] Unhandled log: %q\n", remoteAddr, line)
 }
 
 func main() {
@@ -331,17 +356,26 @@ func main() {
 	}
 	defer ln.Close()
 
+	lnp, err := (&net.ListenConfig{}).ListenPacket(Runtime.Finalizer, "udp", conf.Listen)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer lnp.Close()
+
 	// Shut down listener on OS signal, then close consumer channel
 	go func() {
 		<-Runtime.Finalizer.Done()
 		log.Println("Got interrupt.")
 		ln.Close()
+		lnp.Close()
 		time.Sleep(time.Second) // give everyone a moment to close before channels exit
 		for _, c := range Runtime.Forwards {
 			close(c)
 		}
 		log.Println("Forward channels closed.")
 	}()
+
+	go handleUDP(lnp)
 
 	// Start a single consumer to do the file IO
 	{
