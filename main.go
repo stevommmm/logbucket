@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -43,38 +44,58 @@ type RawConfig struct {
 	} `yaml:"tls"`
 }
 
+type Forward struct {
+	Chan  chan []byte
+	Count atomic.Uint64
+}
+
 type RuntimeConfig struct {
 	ChanBufSize    int
 	TimeBucket     time.Duration
 	BucketLocation string
 	Regexes        []*regexp.Regexp
-	Forwards       []chan []byte
+	Forwards       []Forward
 	Tls            *tls.Config
 	Waits          sync.WaitGroup
 	Finalizer      context.Context
 }
 
-func (rc *RuntimeConfig) Stats() {
+func (rc *RuntimeConfig) Stats(dest string) {
+	hn, err := os.Hostname()
+	if err != nil {
+		hn = "unknown"
+	}
+	hn = strings.ReplaceAll(hn, ".", "_")
+
 	for {
 		select {
 		case <-rc.Finalizer.Done():
 		default:
-			time.Sleep(time.Minute)
-			var o strings.Builder
-			o.WriteString("[metrics] channel buffers: ")
-			for i, ch := range rc.Forwards {
-				fmt.Fprintf(&o, "[%d: %d]", i, len(ch))
+			if dest != "-" {
+				c, err := net.Dial("tcp", dest)
+				if err != nil {
+					log.Println(err)
+				} else {
+					now := time.Now().Unix()
+					for i, ch := range rc.Forwards {
+						fmt.Fprintf(c, "logbucket.%s.forward.%d.queue %d %d\n", hn, i, len(ch.Chan), now)
+						sent := ch.Count.Swap(uint64(0))
+						fmt.Fprintf(c, "logbucket.%s.forward.%d.sent %d %d\n", hn, i, sent, now)
+					}
+					fmt.Fprintf(c, "logbucket.%s.routines %d %d\n", hn, runtime.NumGoroutine(), now)
+					c.Close()
+				}
 			}
-			fmt.Fprintf(&o, " routines:%d", runtime.NumGoroutine())
-			fmt.Println(o.String())
+			time.Sleep(time.Minute)
 		}
 	}
 }
 
-func (rc *RuntimeConfig) NewChannel() chan []byte {
+func (rc *RuntimeConfig) NewChannel() *Forward {
 	c := make(chan []byte, rc.ChanBufSize)
-	rc.Forwards = append(rc.Forwards, c)
-	return c
+	fwd := Forward{Chan: c, Count: atomic.Uint64{}}
+	rc.Forwards = append(rc.Forwards, fwd)
+	return &fwd
 }
 
 func (rc *RuntimeConfig) WrapConnTLS(c net.Conn) *tls.Conn {
@@ -98,7 +119,7 @@ func zOpenNow(btime time.Duration) (*os.File, *zstd.Encoder, int64) {
 	return f, zlog, now.Truncate(btime).Add(btime).Unix()
 }
 
-func UnixOutHandler(c chan []byte, sockpath string) {
+func UnixOutHandler(fwd *Forward, sockpath string) {
 	defer Runtime.Waits.Done()
 
 Outer:
@@ -123,7 +144,7 @@ Outer:
 			}
 			fmt.Printf("[info] Connected to forward sock %s\n", sockpath)
 			for {
-				line, ok := <-c
+				line, ok := <-fwd.Chan
 				if !ok {
 					return
 				}
@@ -131,16 +152,16 @@ Outer:
 					log.Println(err)
 					break
 				}
+				fwd.Count.Add(uint64(1))
 			}
 		}
 	}
 	log.Println("UnixOutHandler exit")
 }
 
-func FileOutHandler(c chan []byte) {
+func FileOutHandler(fwd *Forward) {
 	defer Runtime.Waits.Done()
 	f, zlog, until := zOpenNow(Runtime.TimeBucket)
-	total := 0
 
 Outer:
 	for {
@@ -149,7 +170,7 @@ Outer:
 			zlog.Flush()
 			break Outer
 		default:
-			line, ok := <-c
+			line, ok := <-fwd.Chan
 			if !ok {
 				zlog.Flush()
 				break Outer
@@ -158,13 +179,12 @@ Outer:
 				zlog.Close()
 				f.Close()
 				f, zlog, until = zOpenNow(Runtime.TimeBucket)
-				total = 0
 			}
 
-			if n, err := zlog.Write(append(line, NEWLINE)); err != nil {
+			if _, err := zlog.Write(append(line, NEWLINE)); err != nil {
 				log.Fatal(err)
 			} else {
-				total += n
+				fwd.Count.Add(uint64(1))
 			}
 			zlog.Flush()
 		}
@@ -268,7 +288,7 @@ func parseline(line, remoteAddr string) {
 			if data, err := json.Marshal(raw); err == nil {
 				for _, ch := range Runtime.Forwards {
 					select {
-					case ch <- data:
+					case ch.Chan <- data:
 					default:
 					}
 				}
@@ -288,7 +308,7 @@ func parseline(line, remoteAddr string) {
 			}
 			for _, ch := range Runtime.Forwards {
 				select {
-				case ch <- data:
+				case ch.Chan <- data:
 				default:
 				}
 			}
@@ -301,6 +321,7 @@ func parseline(line, remoteAddr string) {
 }
 
 func main() {
+	cliStats := flag.String("stats", "-", "Graphite destination host:port.")
 	cliConfig := flag.String("config", "./config.yml", "Configuration yaml file path.")
 	flag.Parse()
 
@@ -370,7 +391,7 @@ func main() {
 		lnp.Close()
 		time.Sleep(time.Second) // give everyone a moment to close before channels exit
 		for _, c := range Runtime.Forwards {
-			close(c)
+			close(c.Chan)
 		}
 		log.Println("Forward channels closed.")
 	}()
@@ -391,7 +412,7 @@ func main() {
 		go UnixOutHandler(c, upath)
 	}
 
-	go Runtime.Stats()
+	go Runtime.Stats(*cliStats)
 
 	for {
 		cl, err := ln.Accept()
