@@ -46,7 +46,7 @@ type RawConfig struct {
 
 type Forward struct {
 	Chan  chan []byte
-	Count atomic.Uint64
+	Count *atomic.Uint64
 }
 
 type RuntimeConfig struct {
@@ -93,7 +93,7 @@ func (rc *RuntimeConfig) Stats(dest string) {
 
 func (rc *RuntimeConfig) NewChannel() *Forward {
 	c := make(chan []byte, rc.ChanBufSize)
-	fwd := Forward{Chan: c, Count: atomic.Uint64{}}
+	fwd := Forward{Chan: c, Count: &atomic.Uint64{}}
 	rc.Forwards = append(rc.Forwards, fwd)
 	return &fwd
 }
