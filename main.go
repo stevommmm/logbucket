@@ -218,8 +218,8 @@ func handleUDP(c net.PacketConn) {
 		default:
 			n, addr, err := c.ReadFrom(buf)
 			if n > 0 {
-				line := buf[:n]
-				parseline(string(line), addr.String())
+				line := strings.ReplaceAll(string(buf[:n]), "\n", "\\n")
+				parseline(line, addr.String())
 			}
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
