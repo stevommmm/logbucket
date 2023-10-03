@@ -45,6 +45,7 @@ type RawConfig struct {
 }
 
 type Forward struct {
+	Name string
 	Chan  chan []byte
 	Count *atomic.Uint64
 }
@@ -77,10 +78,10 @@ func (rc *RuntimeConfig) Stats(dest string) {
 					log.Println(err)
 				} else {
 					now := time.Now().Unix()
-					for i, ch := range rc.Forwards {
-						fmt.Fprintf(c, "logbucket.%s.forward.%d.queue %d %d\n", hn, i, len(ch.Chan), now)
+					for _, ch := range rc.Forwards {
+						fmt.Fprintf(c, "logbucket.%s.forward.%s.queue %d %d\n", hn, ch.Name, len(ch.Chan), now)
 						sent := ch.Count.Swap(uint64(0))
-						fmt.Fprintf(c, "logbucket.%s.forward.%d.sent %d %d\n", hn, i, sent, now)
+						fmt.Fprintf(c, "logbucket.%s.forward.%s.sent %d %d\n", hn, ch.Name, sent, now)
 					}
 					fmt.Fprintf(c, "logbucket.%s.routines %d %d\n", hn, runtime.NumGoroutine(), now)
 					c.Close()
@@ -91,15 +92,19 @@ func (rc *RuntimeConfig) Stats(dest string) {
 	}
 }
 
-func (rc *RuntimeConfig) NewChannel() *Forward {
+func (rc *RuntimeConfig) NewChannel(name string) *Forward {
 	c := make(chan []byte, rc.ChanBufSize)
-	fwd := Forward{Chan: c, Count: &atomic.Uint64{}}
+	fwd := Forward{Name: name, Chan: c, Count: &atomic.Uint64{}}
 	rc.Forwards = append(rc.Forwards, fwd)
 	return &fwd
 }
 
 func (rc *RuntimeConfig) WrapConnTLS(c net.Conn) *tls.Conn {
 	return tls.Server(c, rc.Tls)
+}
+
+func withoutExt(filename string) string {
+	return strings.TrimSuffix(filename, filepath.Ext(filename))
 }
 
 func zOpenNow(btime time.Duration) (*os.File, *zstd.Encoder, int64) {
@@ -400,14 +405,14 @@ func main() {
 
 	// Start a single consumer to do the file IO
 	{
-		c := Runtime.NewChannel()
+		c := Runtime.NewChannel("filesystem")
 		Runtime.Waits.Add(1)
 		go FileOutHandler(c)
 	}
 
 	// Start senders for each unix sock fwd
 	for _, upath := range conf.Forwards {
-		c := Runtime.NewChannel()
+		c := Runtime.NewChannel(withoutExt(filepath.Base(upath)))
 		Runtime.Waits.Add(1)
 		go UnixOutHandler(c, upath)
 	}
