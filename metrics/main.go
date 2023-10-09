@@ -13,13 +13,16 @@ import (
 	"os/signal"
 	"strings"
 	"sync/atomic"
+	"sync"
 	"time"
 )
 
 var (
-	NEWLINE byte = '\n'
-	STOP    context.Context
-	metricp atomic.Pointer[map[string]int64]
+	NEWLINE     byte = '\n'
+	STOP        context.Context
+	metricp     atomic.Pointer[map[string]int64]
+	resolved    map[string]string
+	resolvelock sync.RWMutex
 )
 
 func Stats(dest string) {
@@ -51,6 +54,29 @@ func Stats(dest string) {
 			time.Sleep(time.Minute)
 		}
 	}
+}
+
+func cachedresolve(addr string) string {
+	resolvelock.RLock()
+	n, ok := resolved[addr]
+	resolvelock.RUnlock()
+
+	if ok {
+		return n
+	}
+
+	// Write to shared map
+	resolvelock.Lock()
+	defer resolvelock.Unlock()
+	names, err := net.LookupAddr(addr)
+	if err != nil {
+		return addr
+	}
+	if len(names) == 0 {
+		return addr
+	}
+	resolved[addr] = names[0]
+	return names[0]
 }
 
 func main() {
@@ -107,9 +133,12 @@ func main() {
 					if err := json.Unmarshal([]byte(line), &raw); err == nil {
 						h, _, err := net.SplitHostPort(raw["_remote"].(string))
 						if err == nil {
+							hn := cachedresolve(h)
+							hn = strings.ReplaceAll(hn, ".", "_")
+
 							m := metricp.Load()
 							// Probably safe?
-							(*m)[h] += 1
+							(*m)[hn] += 1
 						}
 					}
 					if err := scanner.Err(); err != nil {
