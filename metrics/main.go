@@ -12,8 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync/atomic"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -80,6 +80,7 @@ func cachedresolve(addr string) string {
 }
 
 func main() {
+	resolved = make(map[string]string)
 	cliStats := flag.String("stats", "-", "Graphite destination host:port.")
 	cliSocket := flag.String("socket", "metrics.sock", "Logbucket ingest unix socket.")
 	flag.Parse()
