@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -24,6 +24,10 @@ var (
 	resolved    map[string]string
 	resolvelock sync.RWMutex
 )
+
+type Message struct {
+	Remote string `json:"_remote"`
+}
 
 func Stats(dest string) {
 	hn, err := os.Hostname()
@@ -119,31 +123,31 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Accept error: %s\n", err)
 				continue
 			}
-			scanner := bufio.NewScanner(cl)
-			scanner.Split(bufio.ScanLines)
+			dec := json.NewDecoder(cl)
+			var m Message
+
 			for {
 				select {
 				case <-STOP.Done():
 					return
 				default:
-					if !scanner.Scan() {
+					err := dec.Decode(&m)
+					if err == io.EOF {
+						return
+					}
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "[error] Line scanner fail: %s\n", err)
 						break
 					}
-					line := scanner.Text()
-					raw := make(map[string]interface{})
-					if err := json.Unmarshal([]byte(line), &raw); err == nil {
-						h, _, err := net.SplitHostPort(raw["_remote"].(string))
-						if err == nil {
-							hn := cachedresolve(h)
-							hn = strings.ReplaceAll(hn, ".", "_")
 
-							m := metricp.Load()
-							// Probably safe?
-							(*m)[hn] += 1
-						}
-					}
-					if err := scanner.Err(); err != nil {
-						fmt.Fprintf(os.Stderr, "[error] Line scanner fail: %s\n", err)
+					h, _, err := net.SplitHostPort(m.Remote)
+					if err == nil {
+						hn := cachedresolve(h)
+						hn = strings.ReplaceAll(hn, ".", "_")
+
+						m := metricp.Load()
+						// Probably safe?
+						(*m)[hn] += 1
 					}
 				}
 			}
