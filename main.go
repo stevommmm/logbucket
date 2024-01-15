@@ -45,9 +45,10 @@ type RawConfig struct {
 }
 
 type Forward struct {
-	Name string
+	Name  string
 	Chan  chan []byte
 	Count *atomic.Uint64
+	Bytes *atomic.Uint64
 }
 
 type RuntimeConfig struct {
@@ -82,6 +83,8 @@ func (rc *RuntimeConfig) Stats(dest string) {
 						fmt.Fprintf(c, "logbucket.%s.forward.%s.queue %d %d\n", hn, ch.Name, len(ch.Chan), now)
 						sent := ch.Count.Swap(uint64(0))
 						fmt.Fprintf(c, "logbucket.%s.forward.%s.sent %d %d\n", hn, ch.Name, sent, now)
+						sentb := ch.Count.Swap(uint64(0))
+						fmt.Fprintf(c, "logbucket.%s.forward.%s.bytes_sent %d %d\n", hn, ch.Name, sentb, now)
 					}
 					fmt.Fprintf(c, "logbucket.%s.routines %d %d\n", hn, runtime.NumGoroutine(), now)
 					c.Close()
@@ -94,7 +97,7 @@ func (rc *RuntimeConfig) Stats(dest string) {
 
 func (rc *RuntimeConfig) NewChannel(name string) *Forward {
 	c := make(chan []byte, rc.ChanBufSize)
-	fwd := Forward{Name: name, Chan: c, Count: &atomic.Uint64{}}
+	fwd := Forward{Name: name, Chan: c, Count: &atomic.Uint64{}, Bytes: &atomic.Uint64{}}
 	rc.Forwards = append(rc.Forwards, fwd)
 	return &fwd
 }
@@ -153,11 +156,14 @@ Outer:
 				if !ok {
 					return
 				}
-				if _, err := conn.Write(append(line, NEWLINE)); err != nil {
+				if n, err := conn.Write(append(line, NEWLINE)); err != nil {
 					log.Println(err)
 					break
+				} else {
+					fwd.Count.Add(uint64(1))
+					fwd.Bytes.Add(uint64(n))
 				}
-				fwd.Count.Add(uint64(1))
+
 			}
 		}
 	}
@@ -186,10 +192,11 @@ Outer:
 				f, zlog, until = zOpenNow(Runtime.TimeBucket)
 			}
 
-			if _, err := zlog.Write(append(line, NEWLINE)); err != nil {
+			if n, err := zlog.Write(append(line, NEWLINE)); err != nil {
 				log.Fatal(err)
 			} else {
 				fwd.Count.Add(uint64(1))
+				fwd.Bytes.Add(uint64(n))
 			}
 			zlog.Flush()
 		}
@@ -234,7 +241,6 @@ func handleUDP(c net.PacketConn) {
 			}
 		}
 	}
-	log.Println("handleUDP exit")
 }
 
 func handleClient(c *bConn) {
