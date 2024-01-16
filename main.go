@@ -83,7 +83,7 @@ func (rc *RuntimeConfig) Stats(dest string) {
 						fmt.Fprintf(c, "logbucket.%s.forward.%s.queue %d %d\n", hn, ch.Name, len(ch.Chan), now)
 						sent := ch.Count.Swap(uint64(0))
 						fmt.Fprintf(c, "logbucket.%s.forward.%s.sent %d %d\n", hn, ch.Name, sent, now)
-						sentb := ch.Count.Swap(uint64(0))
+						sentb := ch.Bytes.Swap(uint64(0))
 						fmt.Fprintf(c, "logbucket.%s.forward.%s.bytes_sent %d %d\n", hn, ch.Name, sentb, now)
 					}
 					fmt.Fprintf(c, "logbucket.%s.routines %d %d\n", hn, runtime.NumGoroutine(), now)
