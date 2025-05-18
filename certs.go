@@ -6,10 +6,25 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"log"
 	"math/big"
 	"time"
 )
+
+func cipherSuites() []uint16 {
+	suites := []uint16{}
+	// Add in all the defaults
+	for _, c := range tls.CipherSuites() {
+		suites = append(suites, c.ID)
+	}
+	fmt.Printf("Allowing: ")
+	for _, s := range suites {
+		fmt.Printf("%s ", tls.CipherSuiteName(s))
+	}
+	fmt.Println("")
+	return suites
+}
 
 func LoadOrGenerateCert(certpath, keypath string) *tls.Config {
 	var cert tls.Certificate
@@ -29,6 +44,7 @@ func LoadOrGenerateCert(certpath, keypath string) *tls.Config {
 
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
+		CipherSuites: cipherSuites(),
 	}
 }
 
