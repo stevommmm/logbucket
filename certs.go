@@ -42,6 +42,9 @@ func cipherSuites() []uint16 {
 	for _, c := range tls.CipherSuites() {
 		suites = append(suites, c.ID)
 	}
+	for _, c := range tls.InsecureCipherSuites() {
+		suites = append(suites, c.ID)
+	}
 	suites = slices.Compact(suites)
 	fmt.Printf("Allowing: ")
 	for _, s := range suites {
