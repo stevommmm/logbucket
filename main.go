@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -253,12 +254,15 @@ func handleClient(c *bConn) {
 
 	// Handle plain tcp and tls
 	if fb, err := c.FirstByte(); err != nil {
+		// Ignore people who hang up early - probably monitoring/scanning
+		if errors.Is(err, io.EOF) {
+			return
+		}
 		fmt.Fprintf(os.Stderr, "[error][%s] TLS Peek failed: %s\n", remoteAddr, err)
 		return
 	} else {
 		// https://tls12.xargs.org/#client-hello
 		if fb[0] == 22 { // 22 as \x16
-			fmt.Printf("[info][%s] Client upgraded to TLS\n", remoteAddr)
 			s := Runtime.WrapConnTLS(c)
 			if err := s.Handshake(); err != nil {
 				fmt.Printf("[info][%s] Handshake error %s\n", remoteAddr, err)
@@ -266,6 +270,7 @@ func handleClient(c *bConn) {
 				return
 			}
 			defer s.Close() // stacking closes tls.Conn>net.Conn
+			fmt.Printf("[info][%s] Connection encrypted %s\n", remoteAddr, tls.CipherSuiteName(s.ConnectionState().CipherSuite))
 			scanner = bufio.NewScanner(s)
 		} else {
 			scanner = bufio.NewScanner(c)
