@@ -260,6 +260,11 @@ func handleClient(c *bConn) {
 		if fb[0] == 22 { // 22 as \x16
 			fmt.Printf("[info][%s] Client upgraded to TLS\n", remoteAddr)
 			s := Runtime.WrapConnTLS(c)
+			if err := s.Handshake(); err != nil {
+				fmt.Printf("[info][%s] Handshake error %s\n", remoteAddr, err)
+				s.Close()
+				return
+			}
 			defer s.Close() // stacking closes tls.Conn>net.Conn
 			scanner = bufio.NewScanner(s)
 		} else {
